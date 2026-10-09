@@ -1,3 +1,4 @@
+
 const {
   Client,
   GatewayIntentBits,
@@ -362,7 +363,6 @@ function queueComponents(queue) {
     ];
   }
 
-  // Sıra kapalıyken yalnızca açma butonu görünür.
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
@@ -416,12 +416,10 @@ async function canManageQueue(interaction) {
     return false;
   }
 
-  // Sunucu sahibi her zaman yönetebilir.
   if (interaction.user.id === interaction.guild.ownerId) {
     return true;
   }
 
-  // Yönetici veya Sunucuyu Yönet izni olanlar yönetebilir.
   if (
     interaction.memberPermissions?.has(
       PermissionFlagsBits.Administrator
@@ -433,7 +431,6 @@ async function canManageQueue(interaction) {
     return true;
   }
 
-  // TESTER_ROLE_ID tanımlıysa bu role sahip kişiler de yönetebilir.
   if (TESTER_ROLE_ID) {
     const member = await interaction.guild.members
       .fetch(interaction.user.id)
@@ -576,7 +573,6 @@ async function registerCommands() {
 client.once("ready", async () => {
   console.log(`${client.user.tag} aktif!`);
 
-  // Bot yeniden başladığında kayıtlı kuyruk panellerini yenile.
   for (const [guildId, queue] of Object.entries(queues)) {
     if (!queue.channelId || !queue.messageId) {
       continue;
@@ -650,7 +646,6 @@ client.on("interactionCreate", async interaction => {
           return interaction.showModal(createQueueModal());
         }
 
-        // Sırayı kapatma/açma yalnızca yetkililerde.
         const allowed = await canManageQueue(interaction);
 
         if (!allowed) {
@@ -661,14 +656,18 @@ client.on("interactionCreate", async interaction => {
           });
         }
 
+        // SIRA KAPATILDIĞINDA BÜTÜN OYUNCULARI SİL
         if (buttonId === "sveydy_queue_close") {
           queue.open = false;
+          queue.entries = [];
+
           saveQueues();
 
           await updateQueuePanel(interaction.guild, queue);
 
           return interaction.reply({
-            content: "🔴 Tier test sırası kapatıldı.",
+            content:
+              "🔴 Tier test sırası kapatıldı ve sıradaki bütün oyuncular silindi.",
             ephemeral: true
           });
         }
@@ -766,7 +765,6 @@ client.on("interactionCreate", async interaction => {
         .getTextInputValue("minecraft_username")
         .trim();
 
-      // Minecraft Java kullanıcı adı biçimi.
       if (!/^[A-Za-z0-9_]{3,16}$/.test(minecraftUsername)) {
         return interaction.reply({
           content:
@@ -789,14 +787,12 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      // Aynı kullanıcı adına sahip ikinci bir kayıt oluşturulmaz.
       queue.entries.push({
         userId: interaction.user.id,
         minecraftUsername,
         joinedAt: new Date().toISOString()
       });
 
-      // 20 oyuncuya ulaştığında sıra otomatik kapanır.
       if (queue.entries.length >= MAX_QUEUE_SIZE) {
         queue.open = false;
       }
@@ -987,7 +983,6 @@ client.on("interactionCreate", async interaction => {
     if (command === "sirakur") {
       const queue = getQueue(interaction.guildId);
 
-      // Komutun kullanıldığı kanala yeni panel kur.
       queue.channelId = interaction.channelId;
       queue.messageId = null;
       queue.open = queue.entries.length < MAX_QUEUE_SIZE;
