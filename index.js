@@ -2,7 +2,6 @@
 const {
   Client,
   GatewayIntentBits,
-  Partials,
   EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
@@ -26,12 +25,12 @@ const GUILD_ID = process.env.GUILD_ID;
 const RESULT_CHANNEL_ID = process.env.TIER_RESULT_CHANNEL_ID || "";
 
 if (!TOKEN || !CLIENT_ID || !GUILD_ID) {
-  throw new Error("DISCORD_TOKEN, CLIENT_ID ve GUILD_ID ayarlanmalı.");
+  throw new Error("DISCORD_TOKEN, CLIENT_ID ve GUILD_ID değişkenlerini Render'de ayarla.");
 }
 
 const KITS = [
-  "SWORD", "AXE", "MACE", "CRYSTAL", "UHC",
-  "POT", "SMP", "NETPOT", "DIAPOT"
+  "SWORD", "AXE", "MACE", "CRYSTAL",
+  "UHC", "POT", "SMP", "NETPOT", "DIAPOT"
 ];
 
 const TIERS = [
@@ -40,144 +39,96 @@ const TIERS = [
 ];
 
 const MAX_QUEUE_SIZE = 20;
+const COLOR = 0x7C3AED;
 
 const FILES = {
   tiers: path.join(__dirname, "tiers.json"),
-  queues: path.join(__dirname, "queue.json"),
-  config: path.join(__dirname, "botconfig.json")
+  queues: path.join(__dirname, "queue.json")
 };
 
 function readJSON(file, fallback) {
   try {
     if (!fs.existsSync(file)) {
       fs.writeFileSync(file, JSON.stringify(fallback, null, 2));
-      return fallback;
+      return structuredClone(fallback);
     }
     return JSON.parse(fs.readFileSync(file, "utf8"));
   } catch (error) {
-    console.error("JSON okuma hatası:", error);
-    return fallback;
+    console.error(`Dosya okunamadı: ${file}`, error);
+    return structuredClone(fallback);
   }
 }
 
-function writeJSON(file, data) {
+function saveJSON(file, data) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
 let tierData = readJSON(FILES.tiers, {});
 let queueData = readJSON(FILES.queues, {});
-let config = readJSON(FILES.config, {});
-
-const COLORS = {
-  main: 0x7C3AED,
-  success: 0x22C55E,
-  danger: 0xEF4444
-};
 
 const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
-  ],
-  partials: [Partials.Channel]
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
 
 function saveTiers() {
-  writeJSON(FILES.tiers, tierData);
+  saveJSON(FILES.tiers, tierData);
 }
 
 function saveQueues() {
-  writeJSON(FILES.queues, queueData);
+  saveJSON(FILES.queues, queueData);
 }
 
-function saveConfig() {
-  writeJSON(FILES.config, config);
+function normalize(value) {
+  return String(value || "").trim().toUpperCase();
 }
 
-function getTierRole(guild, tier) {
+// Yalnızca "MACE LT5" gibi birleşik rol adlarını kullanır.
+function getTierRole(guild, kit, tier) {
+  const expectedName = `${kit} ${tier}`;
   return guild.roles.cache.find(
-    role => role.name.trim().toUpperCase() === tier.toUpperCase()
+    role => normalize(role.name) === normalize(expectedName)
   ) || null;
 }
 
+// Kit rolleri sunucuda zaten mevcut olmalı.
 function getKitRole(guild, kit) {
   return guild.roles.cache.find(
-    role => role.name.trim().toUpperCase() === kit.toUpperCase()
+    role => normalize(role.name) === normalize(kit)
   ) || null;
-}
-
-// Yalnızca eksik tier rollerini oluşturur.
-// Kit rollerini oluşturmaz veya değiştirmez.
-async function ensureTierRoles(guild) {
-  await guild.roles.fetch();
-
-  const botMember = await guild.members.fetchMe();
-
-  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles)) {
-    console.error("Eksik tier rolleri için Manage Roles izni gerekli.");
-    return;
-  }
-
-  for (const tier of TIERS) {
-    if (getTierRole(guild, tier)) {
-      console.log(`Mevcut rol kullanılıyor: ${tier}`);
-      continue;
-    }
-
-    try {
-      await guild.roles.create({
-        name: tier,
-        color: COLORS.main,
-        reason: "SVEYDY Tier sistemi: eksik rol"
-      });
-
-      console.log(`Oluşturulan tier rolü: ${tier}`);
-    } catch (error) {
-      console.error(`${tier} oluşturulamadı:`, error.message);
-    }
-  }
-}
-
-function getGuildQueues(guildId) {
-  if (!queueData[guildId] || Array.isArray(queueData[guildId])) {
-    queueData[guildId] = {};
-  }
-  return queueData[guildId];
 }
 
 function getQueue(guildId, kit) {
-  const queues = getGuildQueues(guildId);
-  if (!queues[kit]) {
-    queues[kit] = {
+  if (!queueData[guildId] || Array.isArray(queueData[guildId])) {
+    queueData[guildId] = {};
+  }
+
+  if (!queueData[guildId][kit]) {
+    queueData[guildId][kit] = {
       open: false,
       entries: [],
-      messageId: null,
-      channelId: null
+      channelId: null,
+      messageId: null
     };
   }
-  if (!Array.isArray(queues[kit].entries)) {
-    queues[kit].entries = [];
-  }
-  return queues[kit];
+
+  const queue = queueData[guildId][kit];
+  if (!Array.isArray(queue.entries)) queue.entries = [];
+
+  return queue;
 }
 
-function isStaff(member) {
-  return member.permissions.has(PermissionFlagsBits.Administrator) ||
-    member.permissions.has(PermissionFlagsBits.ManageGuild);
-}
-
-function makeQueueEmbed(guildId, kit) {
+function queueEmbed(guildId, kit) {
   const queue = getQueue(guildId, kit);
   const open = queue.open && queue.entries.length < MAX_QUEUE_SIZE;
 
   const players = queue.entries.length
-    ? queue.entries.map((player, index) =>
-        `**${index + 1}.** <@${player.userId}> · \`${player.minecraftUsername}\``
+    ? queue.entries.map((p, i) =>
+        `**${i + 1}.** <@${p.userId}> · \`${p.minecraftUsername}\``
       ).join("\n")
     : "_Sıra boş._";
 
   return new EmbedBuilder()
-    .setColor(open ? COLORS.success : COLORS.danger)
+    .setColor(open ? 0x22C55E : 0xEF4444)
     .setTitle(`⚔️ ${kit} TIER SIRASI`)
     .setDescription(
       `${open ? "🟢 Açık" : "🔴 Kapalı"} · **${queue.entries.length}/${MAX_QUEUE_SIZE}**\n\n${players}`
@@ -186,14 +137,14 @@ function makeQueueEmbed(guildId, kit) {
     .setTimestamp();
 }
 
-function queueComponents(kit) {
+function queueButtons(kit) {
   return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`queue_join:${kit}`)
         .setLabel("Sıraya Katıl")
-        .setEmoji("⚔️")
         .setStyle(ButtonStyle.Primary)
+        .setEmoji("⚔️")
     )
   ];
 }
@@ -208,44 +159,42 @@ async function refreshQueue(guild, kit) {
 
     const message = await channel.messages.fetch(queue.messageId);
     await message.edit({
-      embeds: [makeQueueEmbed(guild.id, kit)],
-      components: queueComponents(kit)
+      embeds: [queueEmbed(guild.id, kit)],
+      components: queueButtons(kit)
     });
   } catch (error) {
-    console.error("Sıra paneli güncellenemedi:", error.message);
+    console.error(`${kit} sıra paneli güncellenemedi:`, error.message);
   }
 }
 
 async function deployCommands() {
   const commands = [
     new SlashCommandBuilder()
-      .setName("tierim")
-      .setDescription("Kendi tierlerini göster.")
-      .addStringOption(o => o.setName("kit").setDescription("Kit")
-        .setRequired(false)
-        .addChoices(...KITS.map(k => ({ name: k, value: k })))),
-
-    new SlashCommandBuilder()
-      .setName("tierlist")
-      .setDescription("Bir kitin tier listesini göster.")
-      .addStringOption(o => o.setName("kit").setDescription("Kit")
-        .setRequired(true)
-        .addChoices(...KITS.map(k => ({ name: k, value: k })))),
-
-    new SlashCommandBuilder()
       .setName("tierver")
-      .setDescription("Oyuncuya tier ver.")
+      .setDescription("Oyuncuya kit tieri ver.")
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
       .addUserOption(o => o.setName("oyuncu").setDescription("Oyuncu").setRequired(true))
       .addStringOption(o => o.setName("kit").setDescription("Kit").setRequired(true)
         .addChoices(...KITS.map(k => ({ name: k, value: k }))))
       .addStringOption(o => o.setName("tier").setDescription("Tier").setRequired(true)
         .addChoices(...TIERS.map(t => ({ name: t, value: t }))))
-      .addStringOption(o => o.setName("minecraft").setDescription("Minecraft adı").setRequired(false)),
+      .addStringOption(o => o.setName("minecraft").setDescription("Minecraft kullanıcı adı").setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName("tierim")
+      .setDescription("Kendi tierlerini göster.")
+      .addStringOption(o => o.setName("kit").setDescription("Kit").setRequired(false)
+        .addChoices(...KITS.map(k => ({ name: k, value: k })))),
+
+    new SlashCommandBuilder()
+      .setName("tierlist")
+      .setDescription("Kit tier listesini göster.")
+      .addStringOption(o => o.setName("kit").setDescription("Kit").setRequired(true)
+        .addChoices(...KITS.map(k => ({ name: k, value: k })))),
 
     new SlashCommandBuilder()
       .setName("sirakur")
-      .setDescription("Kit için sıra paneli kur.")
+      .setDescription("Kit sıra paneli kur.")
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
       .addStringOption(o => o.setName("kit").setDescription("Kit").setRequired(true)
         .addChoices(...KITS.map(k => ({ name: k, value: k })))),
@@ -266,14 +215,14 @@ async function deployCommands() {
 
     new SlashCommandBuilder()
       .setName("panelkur")
-      .setDescription("Kit rolü seçim panelini kur.")
+      .setDescription("Kit rol panelini kur.")
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 
     new SlashCommandBuilder()
       .setName("ayar")
-      .setDescription("Tier ve kit rollerini kontrol et.")
+      .setDescription("Kit ve birleşik tier rollerini kontrol et.")
       .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-  ].map(command => command.toJSON());
+  ].map(c => c.toJSON());
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   await rest.put(
@@ -287,14 +236,29 @@ client.once("ready", async () => {
 
   try {
     const guild = await client.guilds.fetch(GUILD_ID);
-    await ensureTierRoles(guild);
+    await guild.roles.fetch();
+
+    // Genel HT1/LT5 rolleri oluşturulmaz.
+    // Yalnızca kit + tier rolleri kontrol edilir; mevcut roller değiştirilmez.
+    const missing = [];
+    for (const kit of KITS) {
+      for (const tier of TIERS) {
+        if (!getTierRole(guild, kit, tier)) {
+          missing.push(`${kit} ${tier}`);
+        }
+      }
+    }
+
+    if (missing.length) {
+      console.warn("Sunucuda bulunamayan kit+tier rolleri:", missing.join(", "));
+    }
+
     await deployCommands();
-    console.log("Komutlar yüklendi.");
+    console.log("Slash komutları yüklendi.");
   } catch (error) {
-    console.error("Başlangıç hatası:", error);
+    console.error("Bot başlangıç hatası:", error);
   }
 
-  // Önceki açık sıralar yeniden başlatma sonrasında kapalı başlar.
   for (const queues of Object.values(queueData)) {
     for (const queue of Object.values(queues || {})) {
       if (queue && typeof queue === "object" && "open" in queue) {
@@ -316,38 +280,126 @@ client.on("interactionCreate", async interaction => {
       if (interaction.commandName === "ayar") {
         await guild.roles.fetch();
 
-        const missingTiers = TIERS.filter(t => !getTierRole(guild, t));
-        const missingKits = KITS.filter(k => !getKitRole(guild, k));
+        const missing = [];
+        for (const kit of KITS) {
+          for (const tier of TIERS) {
+            if (!getTierRole(guild, kit, tier)) missing.push(`${kit} ${tier}`);
+          }
+        }
+
+        const missingKits = KITS.filter(kit => !getKitRole(guild, kit));
+
+        const embed = new EmbedBuilder()
+          .setColor(missing.length || missingKits.length ? 0xEF4444 : 0x22C55E)
+          .setTitle("⚙️ SVEYDY • Rol Kontrolü")
+          .setDescription(
+            `**Eksik kit+tier rolleri:**\n${missing.length ? missing.slice(0, 40).join(", ") : "Yok"}\n\n` +
+            `**Eksik kit rolleri:**\n${missingKits.length ? missingKits.join(", ") : "Yok"}`
+          );
+
+        return interaction.reply({ embeds: [embed], ephemeral: true });
+      }
+
+      if (interaction.commandName === "tierver") {
+        const target = interaction.options.getUser("oyuncu");
+        const kit = interaction.options.getString("kit");
+        const tier = interaction.options.getString("tier");
+        const minecraft = interaction.options.getString("minecraft");
+
+        await guild.roles.fetch();
+
+        const member = await guild.members.fetch(target.id);
+        const botMember = await guild.members.fetchMe();
+        const newRole = getTierRole(guild, kit, tier);
+        const kitRole = getKitRole(guild, kit);
+
+        if (!newRole) {
+          return interaction.reply({
+            content: `❌ **${kit} ${tier}** rolü sunucuda bulunamadı. Genel ${tier} rolü kullanılmayacak. Önce doğru rolü oluştur.`,
+            ephemeral: true
+          });
+        }
+
+        if (!kitRole) {
+          return interaction.reply({
+            content: `❌ **${kit}** kit rolü bulunamadı.`,
+            ephemeral: true
+          });
+        }
+
+        if (
+          newRole.position >= botMember.roles.highest.position ||
+          kitRole.position >= botMember.roles.highest.position
+        ) {
+          return interaction.reply({
+            content: "❌ Bot rolünü kit ve tier rollerinin üstüne taşı.",
+            ephemeral: true
+          });
+        }
+
+        const previous = tierData[guild.id]?.[target.id]?.[kit];
+        const oldTier = previous?.tier;
+        const oldRole = oldTier ? getTierRole(guild, kit, oldTier) : null;
+
+        if (oldRole && oldRole.id !== newRole.id && member.roles.cache.has(oldRole.id)) {
+          await member.roles.remove(oldRole);
+        }
+
+        await member.roles.add([newRole, kitRole]);
+
+        tierData[guild.id] ??= {};
+        tierData[guild.id][target.id] ??= {};
+        tierData[guild.id][target.id][kit] = {
+          tier,
+          minecraft: minecraft || previous?.minecraft || "Belirtilmedi",
+          tester: interaction.user.id,
+          updatedAt: new Date().toISOString()
+        };
+        saveTiers();
+
+        const embed = new EmbedBuilder()
+          .setColor(COLOR)
+          .setTitle("🏆 TIER SONUCU")
+          .setThumbnail(target.displayAvatarURL())
+          .addFields(
+            { name: "Oyuncu", value: `<@${target.id}>`, inline: true },
+            { name: "Kit", value: kit, inline: true },
+            { name: "Yeni rol", value: `**${kit} ${tier}**`, inline: true },
+            { name: "Önceki tier", value: oldTier || "Yeni kayıt", inline: true },
+            { name: "Minecraft", value: tierData[guild.id][target.id][kit].minecraft, inline: true },
+            { name: "Test eden", value: `<@${interaction.user.id}>`, inline: true }
+          )
+          .setTimestamp();
+
+        if (RESULT_CHANNEL_ID) {
+          const channel = await guild.channels.fetch(RESULT_CHANNEL_ID).catch(() => null);
+          if (channel?.isTextBased()) {
+            await channel.send({ embeds: [embed] }).catch(console.error);
+          }
+        }
 
         return interaction.reply({
-          embeds: [
-            new EmbedBuilder()
-              .setColor(missingTiers.length || missingKits.length ? COLORS.danger : COLORS.success)
-              .setTitle("⚙️ SVEYDY Rol Kontrolü")
-              .addFields(
-                { name: "Tier rolleri", value: missingTiers.length ? missingTiers.join(", ") : "Hepsi mevcut." },
-                { name: "Kit rolleri", value: missingKits.length ? missingKits.join(", ") : "Hepsi mevcut." }
-              )
-          ],
+          content: `✅ ${target} oyuncusuna **${kit} ${tier}** rolü verildi.`,
+          embeds: [embed],
           ephemeral: true
         });
       }
 
       if (interaction.commandName === "tierim") {
         const kit = interaction.options.getString("kit");
-        const player = tierData[guild.id]?.[interaction.user.id] || {};
+        const records = tierData[guild.id]?.[interaction.user.id] || {};
 
-        const entries = Object.entries(player)
-          .filter(([name, value]) => KITS.includes(name) && value?.tier)
+        const entries = Object.entries(records)
+          .filter(([name, record]) => KITS.includes(name) && record?.tier)
           .filter(([name]) => !kit || name === kit);
 
         return interaction.reply({
           embeds: [
             new EmbedBuilder()
-              .setColor(COLORS.main)
+              .setColor(COLOR)
               .setTitle(`${interaction.user.username} • Tierler`)
               .setDescription(entries.length
-                ? entries.map(([name, value]) => `**${name}:** ${value.tier}`).join("\n")
+                ? entries.map(([name, record]) => `**${name}:** ${name} ${record.tier}`).join("\n")
                 : "Kayıtlı tier bulunamadı.")
           ],
           ephemeral: true
@@ -368,85 +420,12 @@ client.on("interactionCreate", async interaction => {
         return interaction.reply({
           embeds: [
             new EmbedBuilder()
-              .setColor(COLORS.main)
+              .setColor(COLOR)
               .setTitle(`${kit} Tier Listesi`)
               .setDescription(entries.length
-                ? entries.map((p, i) => `**${i + 1}.** <@${p.userId}> — **${p.tier}** · \`${p.minecraft || "Belirtilmedi"}\``).join("\n")
-                : "Bu kitte henüz tier kaydı yok.")
+                ? entries.map((p, i) => `**${i + 1}.** <@${p.userId}> — **${kit} ${p.tier}** · \`${p.minecraft || "Belirtilmedi"}\``).join("\n")
+                : "Henüz tier kaydı yok.")
           ]
-        });
-      }
-
-      if (interaction.commandName === "tierver") {
-        const target = interaction.options.getUser("oyuncu");
-        const kit = interaction.options.getString("kit");
-        const tier = interaction.options.getString("tier");
-        const minecraft = interaction.options.getString("minecraft");
-
-        await guild.roles.fetch();
-
-        const member = await guild.members.fetch(target.id);
-        const tierRole = getTierRole(guild, tier);
-        const kitRole = getKitRole(guild, kit);
-        const botMember = await guild.members.fetchMe();
-
-        if (!tierRole || !kitRole) {
-          return interaction.reply({
-            content: `Eksik rol: ${!tierRole ? tier : kit}. /ayar komutunu çalıştır.`,
-            ephemeral: true
-          });
-        }
-
-        if (tierRole.position >= botMember.roles.highest.position ||
-            kitRole.position >= botMember.roles.highest.position) {
-          return interaction.reply({
-            content: "Botun rolünü tier ve kit rollerinin üzerine taşı.",
-            ephemeral: true
-          });
-        }
-
-        const previous = tierData[guild.id]?.[target.id]?.[kit];
-        const oldTier = previous?.tier;
-        const oldRole = oldTier ? getTierRole(guild, oldTier) : null;
-
-        if (oldRole && member.roles.cache.has(oldRole.id)) {
-          await member.roles.remove(oldRole);
-        }
-
-        await member.roles.add([tierRole, kitRole]);
-
-        tierData[guild.id] ??= {};
-        tierData[guild.id][target.id] ??= {};
-        tierData[guild.id][target.id][kit] = {
-          tier,
-          minecraft: minecraft || previous?.minecraft || "Belirtilmedi",
-          tester: interaction.user.id,
-          updatedAt: new Date().toISOString()
-        };
-        saveTiers();
-
-        const embed = new EmbedBuilder()
-          .setColor(COLORS.success)
-          .setTitle("🏆 TIER SONUCU")
-          .setThumbnail(target.displayAvatarURL())
-          .addFields(
-            { name: "Oyuncu", value: `<@${target.id}>`, inline: true },
-            { name: "Kit", value: kit, inline: true },
-            { name: "Sonuç", value: `${oldTier || "Yeni"} → **${tier}**`, inline: true },
-            { name: "Minecraft", value: tierData[guild.id][target.id][kit].minecraft, inline: true },
-            { name: "Test Eden", value: `<@${interaction.user.id}>`, inline: true }
-          )
-          .setTimestamp();
-
-        if (RESULT_CHANNEL_ID) {
-          const channel = await guild.channels.fetch(RESULT_CHANNEL_ID).catch(() => null);
-          if (channel?.isTextBased()) await channel.send({ embeds: [embed] }).catch(console.error);
-        }
-
-        return interaction.reply({
-          content: `✅ ${target} oyuncusuna ${kit} / ${tier} verildi.`,
-          embeds: [embed],
-          ephemeral: true
         });
       }
 
@@ -459,15 +438,15 @@ client.on("interactionCreate", async interaction => {
         queue.channelId = interaction.channelId;
 
         const message = await interaction.channel.send({
-          embeds: [makeQueueEmbed(guild.id, kit)],
-          components: queueComponents(kit)
+          embeds: [queueEmbed(guild.id, kit)],
+          components: queueButtons(kit)
         });
 
         queue.messageId = message.id;
         saveQueues();
 
         return interaction.reply({
-          content: `${kit} sıra paneli kuruldu. Açmak için /siraac kit:${kit}`,
+          content: `${kit} sıra paneli kuruldu. Açmak için /siraac komutunu kullan.`,
           ephemeral: true
         });
       }
@@ -477,38 +456,37 @@ client.on("interactionCreate", async interaction => {
         const queue = getQueue(guild.id, kit);
 
         queue.open = interaction.commandName === "siraac";
-
         if (!queue.open) queue.entries = [];
 
         saveQueues();
         await refreshQueue(guild, kit);
 
         return interaction.reply({
-          content: queue.open ? `🟢 ${kit} sırası açıldı.` : `🔴 ${kit} sırası kapatıldı ve temizlendi.`,
+          content: queue.open ? `${kit} sırası açıldı.` : `${kit} sırası kapatıldı ve temizlendi.`,
           ephemeral: true
         });
       }
 
       if (interaction.commandName === "panelkur") {
-        const select = new StringSelectMenuBuilder()
+        const menu = new StringSelectMenuBuilder()
           .setCustomId("kit_role_select")
-          .setPlaceholder("Kit rollerini seç...")
+          .setPlaceholder("Kit rollerini seç")
           .setMinValues(1)
           .setMaxValues(KITS.length)
           .addOptions(KITS.map(kit => ({
             label: kit,
             value: kit,
-            description: `${kit} rolünü al`
+            description: `${kit} kit rolünü al`
           })));
 
         await interaction.channel.send({
           embeds: [
             new EmbedBuilder()
-              .setColor(COLORS.main)
+              .setColor(COLOR)
               .setTitle("🎮 SVEYDY • KIT ROLLERİ")
-              .setDescription("Almak istediğin kit rollerini seç.")
+              .setDescription("Almak istediğin mevcut kit rollerini seç.")
           ],
-          components: [new ActionRowBuilder().addComponents(select)]
+          components: [new ActionRowBuilder().addComponents(menu)]
         });
 
         return interaction.reply({ content: "Kit paneli kuruldu.", ephemeral: true });
@@ -521,25 +499,23 @@ client.on("interactionCreate", async interaction => {
 
       const member = await guild.members.fetch(interaction.user.id);
       const botMember = await guild.members.fetchMe();
-
       const roles = interaction.values.map(kit => getKitRole(guild, kit));
 
       if (roles.some(role => !role)) {
         return interaction.reply({
-          content: "Seçilen kit rollerinden biri bulunamadı. Rol adlarını kontrol et.",
+          content: "Seçilen kit rollerinden biri sunucuda bulunamadı.",
           ephemeral: true
         });
       }
 
       if (roles.some(role => role.position >= botMember.roles.highest.position)) {
         return interaction.reply({
-          content: "Botun rolü kit rollerinin üzerinde olmalı.",
+          content: "Bot rolünü kit rollerinin üstüne taşı.",
           ephemeral: true
         });
       }
 
       await member.roles.add(roles);
-
       return interaction.reply({
         content: `Kit rollerin verildi: ${interaction.values.join(", ")}`,
         ephemeral: true
@@ -583,19 +559,19 @@ client.on("interactionCreate", async interaction => {
       const username = interaction.fields.getTextInputValue("minecraft_username").trim();
       const queue = getQueue(interaction.guildId, kit);
 
-      if (!/^[A-Za-z0-9_]{3,16}$/.test(username)) {
-        return interaction.reply({ content: "Geçerli Minecraft kullanıcı adı gir.", ephemeral: true });
+      if (!KITS.includes(kit) || !/^[A-Za-z0-9_]{3,16}$/.test(username)) {
+        return interaction.reply({ content: "Geçersiz kit veya Minecraft adı.", ephemeral: true });
       }
 
       if (!queue.open) {
-        return interaction.reply({ content: "Bu sıra artık kapalı.", ephemeral: true });
+        return interaction.reply({ content: "Bu sıra kapalı.", ephemeral: true });
       }
 
       if (queue.entries.some(p =>
         p.userId === interaction.user.id ||
         p.minecraftUsername.toLowerCase() === username.toLowerCase()
       )) {
-        return interaction.reply({ content: "Sen veya bu Minecraft hesabı zaten sırada.", ephemeral: true });
+        return interaction.reply({ content: "Sen veya bu Minecraft adı zaten sırada.", ephemeral: true });
       }
 
       if (queue.entries.length >= MAX_QUEUE_SIZE) {
@@ -617,19 +593,19 @@ client.on("interactionCreate", async interaction => {
       await refreshQueue(interaction.guild, kit);
 
       return interaction.reply({
-        content: `Sıraya katıldın! **${kit}** sıra numaran: ${queue.entries.length}.`,
+        content: `✅ ${kit} sırasına katıldın. Sıra numaran: ${queue.entries.length}.`,
         ephemeral: true
       });
     }
   } catch (error) {
-    console.error("Komut/etkileşim hatası:", error);
-
-    const response = {
-      content: "İşlem başarısız oldu. Render loglarını kontrol et.",
-      ephemeral: true
-    };
+    console.error("Etkileşim hatası:", error);
 
     if (interaction.isRepliable()) {
+      const response = {
+        content: "İşlem sırasında hata oluştu. Render Logs bölümünü kontrol et.",
+        ephemeral: true
+      };
+
       if (interaction.replied || interaction.deferred) {
         await interaction.followUp(response).catch(() => {});
       } else {
@@ -639,7 +615,7 @@ client.on("interactionCreate", async interaction => {
   }
 });
 
-process.on("unhandledRejection", console.error);
-process.on("uncaughtException", console.error);
+process.on("unhandledRejection", error => console.error("Unhandled rejection:", error));
+process.on("uncaughtException", error => console.error("Uncaught exception:", error));
 
 client.login(TOKEN);
