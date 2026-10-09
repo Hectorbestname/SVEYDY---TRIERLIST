@@ -2,7 +2,7 @@
 {
   "name": "sveydy-trierlist",
   "version": "1.0.0",
-  "description": "SVEYDY TRIERLIST Discord Bot",
+  "description": "SVEYDY Tier List Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
