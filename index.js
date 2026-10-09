@@ -28,7 +28,7 @@ const {
 
 const KITS = [
   "Sword", "Axe", "Mace", "Crystal", "UHC",
-  "Pot", "SMP", "NethOP", "DiaPot", "Sumo", "Bow"
+  "Pot", "SMP", "NethOP", "DiaPot"
 ];
 
 const TIERS = [
